@@ -1,0 +1,514 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+handle_error() {
+  echo "Error: Script failed at line $1" >&2
+  echo "Command: $2" >&2
+  echo "Current function: ${FUNCNAME[1]:-main}" >&2
+  exit 1
+}
+trap 'handle_error $LINENO "$BASH_COMMAND"' ERR
+
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_VERSION="1.1.0"
+readonly ULIMIT_PROCESSES=1024
+readonly PROFILE_VERSION="1"
+
+log() { 
+  if [[ ${VERBOSE:-0} -eq 1 ]]; then 
+    echo "DEBUG: $*" >&2
+  fi
+  return 0
+}
+error() { echo "Error: $*" >&2; }
+warn() { echo "Warning: $*" >&2; }
+
+TMPDIR="${TMPDIR:-/tmp}"
+VERBOSE="${CLAUDEBOX_VERBOSE:-0}"
+DRY_RUN="${CLAUDEBOX_DRY_RUN:-0}"
+CONFIG_FILE="${CLAUDEBOX_CONFIG:-$HOME/.claudeboxrc}"
+
+[[ $VERBOSE -eq 1 ]] && echo "DEBUG: Starting claudebox v$SCRIPT_VERSION" >&2
+[[ $VERBOSE -eq 1 ]] && echo "DEBUG: CONFIG_FILE=$CONFIG_FILE" >&2
+[[ $VERBOSE -eq 1 ]] && echo "DEBUG: TMPDIR=$TMPDIR" >&2
+
+if ! PROJECT_DIR="$(pwd -P)"; then
+  echo "Error: Cannot determine current directory" >&2
+  exit 1
+fi
+
+PROJECT_NAME="$(basename "$PROJECT_DIR")"
+if ! CKSUM_OUTPUT="$(echo "$PROJECT_DIR" | cksum 2>/dev/null)"; then
+  error "Failed to generate checksum for project directory"
+  exit 1
+fi
+CKSUM_FIRST="$(echo "$CKSUM_OUTPUT" | cut -d' ' -f1 2>/dev/null)"
+if [[ -z "$CKSUM_FIRST" || ! "$CKSUM_FIRST" =~ ^[0-9]+$ ]]; then
+  error "Invalid checksum output: '$CKSUM_OUTPUT'"
+  exit 1
+fi
+PROJECT_HASH="$(printf "%x" "$CKSUM_FIRST" 2>/dev/null)"
+if [[ -z "$PROJECT_HASH" ]]; then
+  error "Failed to convert checksum to hex"
+  exit 1
+fi
+PROFILE_NAME="claudebox-${PROJECT_NAME}-${PROJECT_HASH}"
+PROFILE_FILE="$TMPDIR/$PROFILE_NAME.sb"
+
+[[ $VERBOSE -eq 1 ]] && echo "DEBUG: Profile will be: $PROFILE_FILE" >&2
+
+cleanup() {
+  set +e
+  [[ -f "$PROFILE_FILE" ]] && rm -f "$PROFILE_FILE"
+  set -e
+}
+trap cleanup EXIT
+
+load_config() {
+  log "Checking for config file: $CONFIG_FILE"
+  set +e
+  if [[ -f "$CONFIG_FILE" ]]; then
+    log "Loading config from $CONFIG_FILE"
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE"
+    local source_result=$?
+    if [[ $source_result -ne 0 ]]; then
+      warn "Failed to load config file $CONFIG_FILE (exit code: $source_result)"
+    fi
+  else
+    log "No config file found at $CONFIG_FILE"
+  fi
+  set -e
+}
+
+validate_environment() {
+  if ! command -v sandbox-exec >/dev/null 2>&1; then
+    error "sandbox-exec not found. This tool requires macOS with sandbox-exec."
+    exit 1
+  fi
+
+  [[ -w "$TMPDIR" ]] || {
+    error "Cannot write to temp directory: $TMPDIR"
+    exit 1
+  }
+
+  [[ -r "$(pwd)" ]] || {
+    error "Cannot read current directory"
+    exit 1
+  }
+
+  if ! command -v claude >/dev/null 2>&1; then
+    warn "claude command not found in PATH - make sure Claude is installed and accessible"
+    [[ $DRY_RUN -eq 0 ]] && warn "Script will attempt to run 'claude' anyway - use CLAUDEBOX_DRY_RUN=1 to test without claude"
+  fi
+
+  log "Environment validation passed"
+}
+
+usage() { 
+  echo "claudebox — run claude code inside a macOS sandbox"
+  echo
+  echo "Copyright (c) 2025 Greitas Kodas <greitaskodas@protonmail.com>"
+  echo "License: MIT"
+  echo
+  echo "Commands:"
+  echo "  claudebox                    # generate profile + run claude (default)"
+  echo "  claudebox run [...args]      # same, pass args through"
+  echo "  claudebox generate           # build the profile only"
+  echo "  claudebox profile            # print last-generated profile path"
+  echo "  claudebox validate           # validate generated profile"
+  echo "  claudebox help               # this text"
+  echo
+  echo "Environment variables:"
+  echo "  CLAUDEBOX_VERBOSE=1          # enable debug output"
+  echo "  CLAUDEBOX_DRY_RUN=1          # show what would be done"
+  echo "  CLAUDEBOX_CONFIG=path        # custom config file"
+  echo
+  echo "Examples:"
+  echo "  $SCRIPT_NAME                    # run with default settings"
+  echo "  $SCRIPT_NAME run --help         # pass args to claude"
+  echo "  CLAUDEBOX_VERBOSE=1 $SCRIPT_NAME # debug mode"
+  echo "  CLAUDEBOX_DRY_RUN=1 $SCRIPT_NAME # show what would be executed"
+  echo
+  echo "Version: $SCRIPT_VERSION"
+}
+
+detect_package_paths() {
+  local cache_file="$TMPDIR/.claudebox-paths-$(whoami)"
+  local cache_max_age=3600  # 1 hour
+  
+  if [[ -f "$cache_file" ]] && [[ $(($(date +%s) - $(stat -f %m "$cache_file" 2>/dev/null || echo 0))) -lt $cache_max_age ]]; then
+    log "Using cached package paths"
+    cat "$cache_file"
+    return
+  fi
+  
+  log "Detecting package manager paths..."
+  local paths=()
+  
+  if [[ -d "/opt/homebrew" ]]; then
+    paths+=("/opt/homebrew")
+    log "Found Homebrew (ARM): /opt/homebrew"
+  elif [[ -d "/usr/local/Homebrew" ]]; then
+    paths+=("/usr/local/Homebrew")
+    log "Found Homebrew (Intel): /usr/local/Homebrew"
+  fi
+  
+  if [[ -d "$HOME/.local" ]]; then
+    paths+=("$HOME/.local")
+    log "Found user binaries: $HOME/.local"
+  fi
+  
+  if [[ -d "$HOME/.nvm" ]]; then
+    paths+=("$HOME/.nvm")
+    log "Found nvm: $HOME/.nvm"
+  fi
+  
+  if [[ -d "$HOME/.fnm" ]]; then
+    paths+=("$HOME/.fnm")
+    log "Found fnm: $HOME/.fnm"
+  fi
+  
+  if [[ -d "$HOME/.nodenv" ]]; then
+    paths+=("$HOME/.nodenv")
+    log "Found nodenv: $HOME/.nodenv"
+  fi
+  
+  if [[ -d "/nix/store" ]]; then
+    paths+=("/nix/store")
+    log "Found Nix: /nix/store"
+  fi
+  
+  printf '%s\n' "${paths[@]}" | tee "$cache_file"
+}
+
+create_base_profile() {
+  log "Creating base sandbox profile..."
+  cat >"$PROFILE_FILE" <<'EOF'
+;; ------------------------------------------------------------------
+;;  Claude Code macOS sandbox profile (autogenerated)
+;;
+;;  NETWORK SECURITY MODEL:
+;;  This profile provides file system isolation but allows network access.
+;;  For domain-based network filtering, use external firewall rules
+;;  (e.g., iptables) before executing claudebox to restrict access to:
+;;  - GitHub API/web/git ranges
+;;  - registry.npmjs.org
+;;  - api.anthropic.com
+;;  - sentry.io
+;;  - statsig.anthropic.com/statsig.com
+;;  - localhost and host network
+;; ------------------------------------------------------------------
+(version 1)
+(deny default)
+
+;; ---------- introspection & sysctl --------------------------------
+(allow file-read-metadata)
+(allow sysctl-read)
+
+;; ---------- basic dir traversal -----------------------------------
+(allow file-read* (literal "/"))
+(allow file-read* (literal "/private"))
+
+;; ---------- system runtime (read-only) ----------------------------
+(allow file-read* file-map-executable
+  (subpath "/System")
+  (subpath "/usr")
+  (subpath "/bin")
+  (subpath "/sbin")
+  (subpath "/Library/Frameworks")
+  (subpath "/private/etc")
+  (subpath "/var/db/dyld")
+__DETECTED_READ_PATHS__
+)
+
+;; ---------- global npm/pipx/cargo bins ----------------------------
+__DETECTED_USER_PATHS__
+
+;; ---------- executable paths --------------------------------------
+(allow process-exec
+  (subpath "/usr")
+  (subpath "/System")
+  (subpath "/bin")
+  (subpath "/sbin")
+  (literal "/usr/bin/env")
+__DETECTED_EXEC_PATHS__
+)
+
+;; ---------- temp dirs ---------------------------------------------
+(allow file-read* file-write*
+  (subpath "/tmp")
+  (regex "^/private/var/folders/.*/T/")
+)
+
+;; ---------- Claude config & token files ---------------------------
+(allow file-read* file-write*
+  (subpath "__HOME__/.claude")            ;; dir
+  (literal "__HOME__/.claude.json")       ;; single file
+)
+
+;; ---------- time-zone & prefs (RO) --------------------------------
+(allow file-read*
+  (subpath "/private/var/db/timezone")    ;; tzdata
+  (subpath "/Library/Preferences")        ;; plists
+)
+
+;; ---------- /dev access (RO) + ioctl ------------------------------
+(allow file-read* (literal "/dev"))                           ;;
+(allow file-read* file-write*
+  (regex "^/dev/(tty.*|null|zero|dtracehelper)")
+)
+(allow file-ioctl
+  (literal "/dev/dtracehelper")                               ;;
+  (regex "^/dev/tty.*")                                       ;;
+)
+
+;; ---------- mach-lookup services ---------------------------------
+(allow mach-lookup                                              ;;
+  (global-name "com.apple.system.opendirectoryd.libinfo")
+  (global-name "com.apple.SystemConfiguration.DNSConfiguration")
+  (global-name "com.apple.coreservices.launchservicesd")
+  (global-name "com.apple.CoreServices.coreservicesd")
+  (global-name "com.apple.system.notification_center")
+  (global-name "com.apple.logd")
+  (global-name "com.apple.diagnosticd")
+  (global-name "com.apple.lsd.mapdb")
+  (global-name "com.apple.lsd.modifydb")
+  (global-name "com.apple.coreservices.quarantine-resolver")
+)
+
+;; ---------- Launch Services needed by /usr/bin/open --------------
+(allow mach-lookup
+  (regex "^com\\.apple\\.lsd(\\..*)?$")                   ;; lsd + its mapdb / modifydb helpers
+)
+
+;; ---------- Notification Center shared-memory (RO) ---------------
+(allow ipc-posix-shm-read-data
+  (ipc-posix-name "apple.shm.notification_center")
+)
+
+;; ---------- User-level preference reads (RO) ---------------------
+(allow file-read*
+  (subpath "__HOME__/Library/Preferences")
+)
+
+;; ---------- IDE configuration reads (RO) -------------------------
+(allow file-read*
+  (subpath "__HOME__/Library/Application Support")
+  (subpath "__HOME__/.vscode")
+  (subpath "__HOME__/.cursor")
+  (subpath "__HOME__/.vim")
+  (subpath "__HOME__/.config")
+)
+
+;; ---------- explicit sensitive DENY list --------------------------
+(deny file-read* file-write*
+  (subpath "__HOME__/Documents")
+  (subpath "__HOME__/Desktop")
+  (subpath "__HOME__/Downloads")
+  (subpath "__HOME__/Pictures")
+  (subpath "__HOME__/Movies")
+  (subpath "__HOME__/Music")
+  (regex "^__HOME__/\\.(ssh|aws|gnupg|kube|docker|config)($|/)")
+)
+
+;; ---------- project workspace (RW) --------------------------------
+(allow file-read* file-write* file-map-executable
+  (subpath "__PROJECT_DIR__")
+)
+(allow process-exec
+  (subpath "__PROJECT_DIR__")
+)
+
+;; ---------- networking --------------------------------------------
+;; NETWORK SECURITY NOTICE:
+;; macOS sandbox has limited domain-based network filtering capabilities.
+;; For strict domain filtering to only allow:
+;;   - registry.npmjs.org
+;;   - api.anthropic.com  
+;;   - sentry.io
+;;   - statsig.anthropic.com
+;;   - statsig.com
+;; Please configure external firewall rules (e.g., Little Snitch, Lulu, or
+;; pfctl) before running claudebox to restrict network access.
+
+;; Allow DNS resolution (required for any network access)
+(allow network-outbound
+  (remote udp "*:53")
+  (remote tcp "*:53")
+)
+
+;; Allow localhost connections (development servers, etc.)
+(allow network*
+  (remote ip "localhost:*")
+)
+
+;; Allow inbound connections for local development servers
+(allow network-inbound (local ip))
+
+;; Allow outbound connections (to be filtered by external firewall)
+;; WARNING: This allows all outbound connections - use external firewall
+;; to restrict to only the approved domains listed above
+(allow network-outbound)
+
+(allow process-fork)
+(allow lsopen)
+EOF
+}
+
+replace_placeholders() {
+  local project_dir="$1"
+  local home_dir="$2"
+  
+  log "Replacing placeholders in profile..."
+  /usr/bin/sed -i '' \
+    -e "s|__PROJECT_DIR__|$project_dir|g" \
+    -e "s|__HOME__|$home_dir|g" \
+    "$PROFILE_FILE"
+}
+
+add_detected_paths() {
+  local detected_paths=("$@")
+  
+  log "Adding ${#detected_paths[@]} detected paths..."
+  for path in "${detected_paths[@]}"; do
+    /usr/bin/sed -i '' "/__DETECTED_READ_PATHS__/i\\
+  (subpath \"$path\")
+" "$PROFILE_FILE"
+    
+    /usr/bin/sed -i '' "/__DETECTED_EXEC_PATHS__/i\\
+  (subpath \"$path\")
+" "$PROFILE_FILE"
+    
+    if [[ "$path" == *"/.local" ]]; then
+      /usr/bin/sed -i '' "/__DETECTED_USER_PATHS__/i\\
+(allow file-read*\\
+  (subpath \"$path\")\\
+)
+" "$PROFILE_FILE"
+    fi
+  done
+}
+
+cleanup_placeholders() {
+  log "Cleaning up placeholder markers..."
+  /usr/bin/sed -i '' \
+    -e "/__DETECTED_READ_PATHS__/d" \
+    -e "/__DETECTED_USER_PATHS__/d" \
+    -e "/__DETECTED_EXEC_PATHS__/d" \
+    "$PROFILE_FILE"
+  
+  if ! grep -q "/.local" "$PROFILE_FILE"; then
+    /usr/bin/sed -i '' '/^;; ---------- global npm\/pipx\/cargo bins/a\
+;; No user package paths detected
+' "$PROFILE_FILE"
+  fi
+}
+
+generate_profile() {
+  local project_dir="$(pwd -P)"
+  local home_dir="$HOME"
+  
+  local detected_paths=()
+  while IFS= read -r path; do
+    detected_paths+=("$path")
+  done < <(detect_package_paths)
+  
+  create_base_profile
+  replace_placeholders "$project_dir" "$home_dir"
+  add_detected_paths "${detected_paths[@]}"
+  cleanup_placeholders
+  
+  log "Profile generated: $PROFILE_FILE"
+}
+
+validate_profile() {
+  log "Validating sandbox profile..."
+  if ! sandbox-exec -f "$PROFILE_FILE" true 2>/dev/null; then
+    error "Generated profile is invalid"
+    return 1
+  fi
+  log "Profile validation passed"
+  return 0
+}
+
+run_claude() {
+  log "Starting run_claude function with args: $*"
+  [ $# -gt 0 ] && shift
+  log "After shifting, remaining args: $*"
+  
+  log "Loading configuration..."
+  load_config
+  log "Configuration loaded successfully"
+  
+  log "Validating environment..."
+  validate_environment
+  log "Environment validation completed"
+  
+  log "Generating sandbox profile..."
+  generate_profile
+  log "Profile generated successfully"
+  
+  log "Validating sandbox profile..."
+  validate_profile || exit 1
+  log "Profile validation completed"
+  
+  echo "→ Running Claude Code sandboxed in:  $PWD"
+  echo "→ Profile: $PROFILE_FILE"
+  [[ $VERBOSE -eq 1 ]] && echo "→ Ulimit processes: $ULIMIT_PROCESSES"
+  
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "→ DRY RUN: Would execute:"
+    echo "  ulimit -u $ULIMIT_PROCESSES"
+    echo "  sandbox-exec -f \"$PROFILE_FILE\" claude $*"
+    echo "→ Profile contents:"
+    cat "$PROFILE_FILE"
+    return 0
+  fi
+  
+  log "Setting ulimit and executing sandboxed claude..."
+  ulimit -u "$ULIMIT_PROCESSES"
+  exec sandbox-exec -f "$PROFILE_FILE" claude "$@"
+}
+
+cmd="${1:-run}"
+log "Processing command: $cmd"
+
+case "$cmd" in
+  help|-h|--help) 
+    log "Executing help command"
+    usage 
+    ;;
+  run)
+    log "Executing run command"
+    run_claude "$@"
+    ;;
+  generate)
+    log "Executing generate command"
+    load_config
+    validate_environment
+    generate_profile
+    echo "$PROFILE_FILE"
+    ;;
+  profile)
+    log "Executing profile command"
+    echo "$PROFILE_FILE"
+    ;;
+  validate)
+    log "Executing validate command"
+    load_config
+    validate_environment
+    generate_profile
+    validate_profile
+    echo "Profile is valid"
+    ;;
+  *)
+    log "Unknown command: $cmd"
+    echo "Unknown command: $cmd" >&2
+    echo >&2
+    usage >&2
+    exit 1
+    ;;
+esac
+
+log "Script completed successfully"
