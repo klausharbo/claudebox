@@ -2,51 +2,64 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
+## Repository Overview
 
-This repository contains `claudebox`, a macOS sandbox wrapper for Claude Code that provides secure, isolated execution. It's a shell script-based tool that:
+This is **claudebox** - a macOS sandbox wrapper for Claude Code that provides secure, isolated execution environments. The repository contains a single main bash script that wraps `sandbox-exec` to run Claude Code with restricted filesystem and system access.
 
-- Creates dynamic macOS sandbox profiles for each project
-- Automatically detects package managers (Homebrew, npm, nvm, fnm, nodenv, Nix, etc.)
-- Restricts file system access to project directories only
-- Blocks access to sensitive directories (`~/Documents`, `~/Desktop`, `~/.ssh`, etc.)
+## Key Components
+
+- **`claudebox`** - Main bash script (v0.1) that creates dynamic sandbox profiles
+- **`install.sh`** - Installation script for system-wide deployment
+- **`README.md`** - Comprehensive documentation and usage guide
+- **`logo.svg`** - Project logo
 
 ## Architecture
 
-The project consists of three main files:
+### Core Functionality
+The `claudebox` script operates through several key phases:
 
-- `claudebox` - Main bash script (526 lines) with modular architecture
-- `install.sh` - Installation script for user's `~/.local/bin`  
-- `README.md` - Comprehensive documentation
+1. **Environment Detection** (`detect_package_paths`) - Automatically discovers package managers:
+   - Homebrew (ARM: `/opt/homebrew`, Intel: `/usr/local/Homebrew`)
+   - User binaries (`~/.local`)
+   - Node version managers (`~/.nvm`, `~/.fnm`, `~/.nodenv`)
+   - Nix (`/nix/store`)
 
-### Core Components (`claudebox` script)
+2. **Profile Generation** (`generate_profile`) - Creates dynamic sandbox profiles:
+   - Base profile template with security restrictions
+   - Path injection for detected package managers
+   - Project-specific access permissions
 
-**Configuration & Environment (lines 22-112)**
-- Error handling with traps and detailed error reporting
-- Environment variable processing (`CLAUDEBOX_VERBOSE`, `CLAUDEBOX_DRY_RUN`, `CLAUDEBOX_CONFIG`)
-- Config file loading from `~/.claudeboxrc`
-- Early validation of sandbox-exec availability and permissions
+3. **Sandbox Execution** (`run_claude`) - Executes Claude Code within sandbox:
+   - Profile validation using `sandbox-exec -f profile true`
+   - Process limits via `ulimit -u`
+   - Full argument passthrough to Claude Code
 
-**Path Detection System (lines 171-226)**
-- Cached package manager detection (1-hour cache in `$TMPDIR`)
-- Support for multiple package managers: Homebrew (ARM/Intel), npm, nvm, fnm, nodenv, Nix
-- Parallel detection for performance optimization
+### Security Model
+- **Default deny** policy with explicit allow rules
+- **Project directory access** - Full read/write/execute for current working directory
+- **System paths** - Read-only access to `/usr`, `/bin`, `/sbin`, `/System`
+- **Blocked paths** - Personal directories, SSH keys, AWS credentials, etc.
+- **Network access** - Unrestricted (external firewall recommended)
 
-**Sandbox Profile Generation (lines 227-434)**
-- Dynamic profile creation using placeholder replacement
-- Base profile with comprehensive macOS sandbox rules
-- Template-based approach with `__PLACEHOLDER__` markers
-- Automatic cleanup and validation
+## Development Commands
 
-**Command Processing (lines 487-525)**
-- Five main commands: `run` (default), `generate`, `profile`, `validate`, `help`
-- Modular command dispatch with comprehensive logging
-
-## Common Commands
-
+### Basic Usage
 ```bash
 # Run Claude Code in sandbox (default behavior)
 ./claudebox
+
+# Pass arguments to Claude Code
+./claudebox run --help
+./claudebox run --dangerously-skip-permissions
+```
+
+### Development & Debugging
+```bash
+# Enable verbose debug logging
+CLAUDEBOX_VERBOSE=1 ./claudebox
+
+# Dry run mode (show what would be executed)
+CLAUDEBOX_DRY_RUN=1 ./claudebox
 
 # Generate sandbox profile only
 ./claudebox generate
@@ -54,46 +67,60 @@ The project consists of three main files:
 # Validate generated profile
 ./claudebox validate
 
-# Show profile location
+# Show profile file path
 ./claudebox profile
+```
 
-# Debug mode with verbose output
-CLAUDEBOX_VERBOSE=1 ./claudebox
-
-# Dry run to see what would be executed
-CLAUDEBOX_DRY_RUN=1 ./claudebox
-
-# Install to user's PATH
+### Installation
+```bash
+# Install to ~/.local/bin
 ./install.sh
+
+# System-wide installation
+sudo cp claudebox /usr/local/bin/
 ```
 
 ## Configuration
 
-The script supports configuration via:
-- Environment variables (`CLAUDEBOX_*`)
-- Config file at `~/.claudeboxrc` (bash format)
-- Runtime command arguments
+### Environment Variables
+- `CLAUDEBOX_VERBOSE=1` - Enable debug output
+- `CLAUDEBOX_DRY_RUN=1` - Preview mode without execution
+- `CLAUDEBOX_CONFIG=path` - Custom config file location
 
-## Security Model
+### Config File (`~/.claudeboxrc`)
+```bash
+# Example configuration
+ULIMIT_PROCESSES=2048
+VERBOSE=1
+```
 
-**Allowed Access:**
-- Project directory (full read/write/execute)
-- System binaries (`/usr`, `/bin`, `/sbin`, `/System`)
-- Detected package manager paths
-- Claude configuration (`~/.claude`, `~/.claude.json`)
-- IDE configs (read-only): `.vscode`, `.cursor`, `.vim`, `.config`
-- Temp directories and networking
+## Key Functions
 
-**Blocked Access:**
-- Personal directories: `~/Documents`, `~/Desktop`, `~/Downloads`
-- Media folders: `~/Pictures`, `~/Movies`, `~/Music`
-- Sensitive configs: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`
+- `detect_package_paths()` - Package manager discovery with 1-hour caching
+- `create_base_profile()` - Generates sandbox profile template  
+- `generate_profile()` - Creates complete project-specific profile
+- `validate_profile()` - Tests profile syntax with sandbox-exec
+- `run_claude()` - Main execution function with full workflow
 
-## Development Notes
+## Testing
 
-- This is a defensive security tool - all modifications should maintain or enhance security
-- The script uses comprehensive error handling with `set -euo pipefail`
-- Path detection is cached for performance (1-hour TTL)
-- Profile generation uses sed-based template replacement
-- All temporary files are cleaned up via EXIT trap
-- Sandbox profiles are validated before execution using `sandbox-exec -f profile true`
+```bash
+# Test profile generation
+./claudebox generate
+
+# Validate generated profile
+./claudebox validate
+
+# Test in dry-run mode
+CLAUDEBOX_DRY_RUN=1 ./claudebox
+
+# Debug package detection
+CLAUDEBOX_VERBOSE=1 ./claudebox generate
+```
+
+## Important Notes
+
+- **macOS only** - Requires `sandbox-exec` utility (not available on Linux/Windows)
+- **Package detection caching** - Results cached for 1 hour in `$TMPDIR/.claudebox-paths-$(whoami)`
+- **Profile cleanup** - Temporary profiles automatically removed on exit
+- **Error handling** - Comprehensive error trapping with line numbers and function context

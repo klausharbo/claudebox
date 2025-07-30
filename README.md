@@ -1,6 +1,29 @@
 # claudebox
 
-A macOS sandbox wrapper for Claude Code that provides secure, isolated execution environment with automatic package manager detection and comprehensive configuration options.
+<div align="center">
+<img src="logo.svg" alt="claudebox logo" width="140">
+</div>
+
+A macOS sandbox - `sandbox-exec` wrapper for Claude Code that provides secure, isolated execution environment with automatic package manager detection and comprehensive configuration options.
+
+## 📑 Table of Contents
+
+- [🔒 What is claudebox?](#-what-is-claudebox)
+- [📋 Requirements](#-requirements)
+- [⚡ Quick Start](#-quick-start)
+- [📋 Commands](#-commands)
+- [🛠️ Installation](#️-installation)
+- [⚙️ Configuration](#️-configuration)
+- [🚀 Features](#-features)
+- [📖 Usage Examples](#-usage-examples)
+- [🔒 Security Model](#-security-model)
+- [🐛 Troubleshooting](#-troubleshooting)
+- [🔧 How It Works](#-how-it-works)
+- [⚠️ Limitations](#️-limitations)
+- [🔐 Security Details](#-security-details)
+- [📄 License](#-license)
+- [🤝 Contributing](#-contributing)
+- [📞 Support](#-support)
 
 ## 🔒 What is claudebox?
 
@@ -9,6 +32,12 @@ A macOS sandbox wrapper for Claude Code that provides secure, isolated execution
 - Blocking access to sensitive directories (`~/Documents`, `~/Desktop`, `~/.ssh`, etc.)
 - Allowing only necessary system resources and package manager paths
 - Providing configurable process limits
+
+## 📋 Requirements
+
+- **macOS 10.7+** with `sandbox-exec` utility
+- **[Claude Code](https://www.anthropic.com/claude-code)** - Anthropic's official Claude CLI
+- **Xcode Command Line Tools** (for `sandbox-exec`)
 
 ## ⚡ Quick Start
 
@@ -32,6 +61,12 @@ claudebox
 | `claudebox profile` | Print path to generated profile |
 | `claudebox validate` | Validate generated sandbox profile |
 | `claudebox help` | Show help and examples |
+
+### Claude Code Command Reference
+
+All standard [Claude Code commands](https://docs.anthropic.com/en/docs/claude-code/cli-reference) work within the sandbox:
+
+- `claudebox run --dangerously-skip-permissions` - yolo mode
 
 ## 🛠️ Installation
 
@@ -208,6 +243,14 @@ This will show:
 
 `claudebox` creates a dynamic macOS sandbox profile for each project using Apple's `sandbox-exec` utility. Here's the process:
 
+```mermaid
+flowchart TD
+    A[claudebox] --> B[Detect package managers]
+    B --> C[Generate sandbox profile]
+    C --> D[Run Claude Code in sandbox environment]
+    D --> E[Cleanup]
+```
+
 ### 1. Environment Detection
 - Scans for package managers (Homebrew, npm, nvm, fnm, nodenv, Nix)
 - Detects system architecture (Apple Silicon vs Intel)
@@ -279,7 +322,7 @@ Blocked Paths:
 
 ## 📄 License
 
-MIT License - see the script header for full details.
+MIT License
 
 ## 🤝 Contributing
 
