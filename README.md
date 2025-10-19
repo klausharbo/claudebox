@@ -1,5 +1,7 @@
 # claudebox
 
+> **⚠️ FORK NOTICE**: This is a fork of the original [claudebox](https://github.com/Greitas-Kodas/claudebox) project by Greitas Kodas.
+
 <div align="center">
 <img src="logo.svg" alt="claudebox logo" width="140">
 </div>
@@ -87,6 +89,21 @@ claudebox
 ### Option 3: Using install.sh
 ```bash
 ./install.sh
+```
+
+### Option 4: Nix Flake
+```bash
+# Run directly from the repository
+nix run .
+
+# Run with arguments
+nix run . -- --help
+
+# Install to your profile
+nix profile install .
+
+# Use in a temporary shell
+nix shell .
 ```
 
 ## ⚙️ Configuration

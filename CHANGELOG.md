@@ -1,12 +1,14 @@
 # Changelog
 
-## [Unreleased]
+## 2025-10-19 · Added
+- Added Nix flake support for package management and development
+- Added fork notice to README with proper attribution
 
-### Fixed
+## 2025-10-19 · Fixed
 - Fixed "Unbound variable" error by using `/usr/bin/stat` instead of `stat` for BSD compatibility
 - Replaced all relative program calls with absolute paths for compatibility with customized PATH environments:
   - `basename` → `/usr/bin/basename`
-  - `pwd` → `/bin/pwd` 
+  - `pwd` → `/bin/pwd`
   - `cksum` → `/usr/bin/cksum`
   - `cut` → `/usr/bin/cut`
   - `printf` → `/usr/bin/printf`

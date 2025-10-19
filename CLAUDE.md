@@ -124,3 +124,4 @@ CLAUDEBOX_VERBOSE=1 ./claudebox generate
 - **Package detection caching** - Results cached for 1 hour in `$TMPDIR/.claudebox-paths-$(whoami)`
 - **Profile cleanup** - Temporary profiles automatically removed on exit
 - **Error handling** - Comprehensive error trapping with line numbers and function context
+- **Changelog format** - All CHANGELOG.md section headers must use format `## YYYY-MM-DD · Category` (e.g., `## 2025-10-19 · Added`, `## 2025-10-19 · Fixed`)
