@@ -9,7 +9,7 @@ handle_error() {
 }
 trap 'handle_error $LINENO "$BASH_COMMAND"' ERR
 
-readonly SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_NAME="$(/usr/bin/basename "$0")"
 readonly SCRIPT_VERSION="0.1"
 readonly ULIMIT_PROCESSES=1024
 readonly PROFILE_VERSION="1"
@@ -34,22 +34,22 @@ PRESERVE_PROFILE=0
 [[ $VERBOSE -eq 1 ]] && echo "DEBUG: CONFIG_FILE=$CONFIG_FILE" >&2
 [[ $VERBOSE -eq 1 ]] && echo "DEBUG: TMPDIR=$TMPDIR" >&2
 
-if ! PROJECT_DIR="$(pwd -P)"; then
+if ! PROJECT_DIR="$(/bin/pwd -P)"; then
   echo "Error: Cannot determine current directory" >&2
   exit 1
 fi
 
-PROJECT_NAME="$(basename "$PROJECT_DIR")"
-if ! CKSUM_OUTPUT="$(echo "$PROJECT_DIR" | cksum 2>/dev/null)"; then
+PROJECT_NAME="$(/usr/bin/basename "$PROJECT_DIR")"
+if ! CKSUM_OUTPUT="$(echo "$PROJECT_DIR" | /usr/bin/cksum 2>/dev/null)"; then
   error "Failed to generate checksum for project directory"
   exit 1
 fi
-CKSUM_FIRST="$(echo "$CKSUM_OUTPUT" | cut -d' ' -f1 2>/dev/null)"
+CKSUM_FIRST="$(echo "$CKSUM_OUTPUT" | /usr/bin/cut -d' ' -f1 2>/dev/null)"
 if [[ -z "$CKSUM_FIRST" || ! "$CKSUM_FIRST" =~ ^[0-9]+$ ]]; then
   error "Invalid checksum output: '$CKSUM_OUTPUT'"
   exit 1
 fi
-PROJECT_HASH="$(printf "%x" "$CKSUM_FIRST" 2>/dev/null)"
+PROJECT_HASH="$(/usr/bin/printf "%x" "$CKSUM_FIRST" 2>/dev/null)"
 if [[ -z "$PROJECT_HASH" ]]; then
   error "Failed to convert checksum to hex"
   exit 1
@@ -61,7 +61,7 @@ PROFILE_FILE="$TMPDIR/$PROFILE_NAME.sb"
 
 cleanup() {
   set +e
-  [[ $PRESERVE_PROFILE -eq 0 && -f "$PROFILE_FILE" ]] && rm -f "$PROFILE_FILE"
+  [[ $PRESERVE_PROFILE -eq 0 && -f "$PROFILE_FILE" ]] && /bin/rm -f "$PROFILE_FILE"
   set -e
 }
 trap cleanup EXIT
@@ -89,15 +89,15 @@ validate_environment() {
   fi
 
   log "Testing writability of TMPDIR: $TMPDIR"
-  if ! touch "$TMPDIR/.claudebox-test" 2>/dev/null; then
+  if ! /usr/bin/touch "$TMPDIR/.claudebox-test" 2>/dev/null; then
     error "Cannot write to temp directory: $TMPDIR"
-    log "ls -ld output: $(ls -ld "$TMPDIR" 2>&1)"
+    log "ls -ld output: $(/bin/ls -ld "$TMPDIR" 2>&1)"
     exit 1
   fi
-  rm -f "$TMPDIR/.claudebox-test" 2>/dev/null || true
+  /bin/rm -f "$TMPDIR/.claudebox-test" 2>/dev/null || true
   log "TMPDIR is writable"
 
-  [[ -r "$(pwd)" ]] || {
+  [[ -r "$(/bin/pwd)" ]] || {
     error "Cannot read current directory"
     exit 1
   }
@@ -139,12 +139,12 @@ usage() {
 }
 
 detect_package_paths() {
-  local cache_file="$TMPDIR/.claudebox-paths-$(whoami)"
+  local cache_file="$TMPDIR/.claudebox-paths-$(/usr/bin/whoami)"
   local cache_max_age=3600  # 1 hour
   
-  if [[ -f "$cache_file" ]] && [[ $(($(date +%s) - $(stat -f %m "$cache_file" 2>/dev/null || echo 0))) -lt $cache_max_age ]]; then
+  if [[ -f "$cache_file" ]] && [[ $(($(/bin/date +%s) - $(/usr/bin/stat -f "%m" "$cache_file" 2>/dev/null || echo 0))) -lt $cache_max_age ]]; then
     log "Using cached package paths"
-    cat "$cache_file"
+    /bin/cat "$cache_file"
     return
   fi
   
@@ -262,12 +262,12 @@ detect_package_paths() {
     log "Found Bun: $HOME/.bun"
   fi
   
-  printf '%s\n' "${paths[@]}" | tee "$cache_file"
+  /usr/bin/printf '%s\n' "${paths[@]}" | /usr/bin/tee "$cache_file"
 }
 
 create_base_profile() {
   log "Creating base sandbox profile..."
-  cat >"$PROFILE_FILE" <<'EOF'
+  /bin/cat >"$PROFILE_FILE" <<'EOF'
 ;; ------------------------------------------------------------------
 ;;  Claude Code macOS Sandbox Profile (Auto-generated)
 ;;  Version: v0.1 | Profile Version: 1
@@ -528,7 +528,7 @@ cleanup_placeholders() {
     -e "/__DETECTED_EXEC_PATHS__/d" \
     "$PROFILE_FILE"
   
-  if ! grep -q "/.local" "$PROFILE_FILE"; then
+  if ! /usr/bin/grep -q "/.local" "$PROFILE_FILE"; then
     /usr/bin/sed -i '' '/^;; ---------- global npm\/pipx\/cargo bins/a\
 ;; No user package paths detected
 ' "$PROFILE_FILE"
@@ -536,7 +536,7 @@ cleanup_placeholders() {
 }
 
 generate_profile() {
-  local project_dir="$(pwd -P)"
+  local project_dir="$(/bin/pwd -P)"
   local home_dir="$HOME"
   
   local detected_paths=()
@@ -545,7 +545,7 @@ generate_profile() {
   while IFS= read -r path; do
     [[ -n "$path" ]] && detected_paths+=("$path")
   done < "$temp_paths_file"
-  rm -f "$temp_paths_file"
+  /bin/rm -f "$temp_paths_file"
   
   create_base_profile
   replace_placeholders "$project_dir" "$home_dir"
@@ -569,18 +569,18 @@ validate_profile() {
   fi
   
   # Basic syntax validation - check for required elements
-  if ! grep -q "^(version 1)" "$PROFILE_FILE"; then
+  if ! /usr/bin/grep -q "^(version 1)" "$PROFILE_FILE"; then
     error "Profile missing version declaration"
     return 1
   fi
   
-  if ! grep -q "^(deny default)" "$PROFILE_FILE"; then
+  if ! /usr/bin/grep -q "^(deny default)" "$PROFILE_FILE"; then
     error "Profile missing default deny policy"
     return 1
   fi
   
   # Try sandbox-exec validation if available and permitted
-  if sandbox-exec -f "$PROFILE_FILE" true 2>/dev/null; then
+  if /usr/bin/sandbox-exec -f "$PROFILE_FILE" true 2>/dev/null; then
     log "Profile validation passed (sandbox-exec test)"
   else
     local exit_code=$?
@@ -626,13 +626,13 @@ run_claude() {
     echo "  ulimit -u $ULIMIT_PROCESSES"
     echo "  sandbox-exec -f \"$PROFILE_FILE\" claude $*"
     echo "→ Profile contents:"
-    cat "$PROFILE_FILE"
+    /bin/cat "$PROFILE_FILE"
     return 0
   fi
   
   log "Setting ulimit and executing sandboxed claude..."
   ulimit -u "$ULIMIT_PROCESSES"
-  exec sandbox-exec -f "$PROFILE_FILE" claude "$@"
+  exec /usr/bin/sandbox-exec -f "$PROFILE_FILE" claude "$@"
 }
 
 cmd="${1:-run}"
